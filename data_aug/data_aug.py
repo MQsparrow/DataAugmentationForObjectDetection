@@ -812,45 +812,135 @@ class RandomHSV(object):
         
         
         return img, bboxes
-    
+
+# =========================
+# extra implementation
+# =========================
+
 class Sequence(object):
-
-    """Initialise Sequence object
-    
-    Apply a Sequence of transformations to the images/boxes.
-    
-    Parameters
-    ----------
-    augemnetations : list 
-        List containing Transformation Objects in Sequence they are to be 
-        applied
-    
-    probs : int or list 
-        If **int**, the probability with which each of the transformation will 
-        be applied. If **list**, the length must be equal to *augmentations*. 
-        Each element of this list is the probability with which each 
-        corresponding transformation is applied
-    
-    Returns
-    -------
-    
-    Sequence
-        Sequence Object 
-        
-    """
-    def __init__(self, augmentations, probs = 1):
-
-        
+    def __init__(self, augmentations, probs=1):
         self.augmentations = augmentations
         self.probs = probs
-        
+
     def __call__(self, images, bboxes):
+        # If no bounding boxes at start, skip all transforms
+        if bboxes is None:
+            return images, bboxes
+
         for i, augmentation in enumerate(self.augmentations):
+            # If bounding boxes become empty, stop applying geometric transforms
+            if isinstance(bboxes, np.ndarray) and bboxes.size == 0:
+                return images, bboxes
+
             if type(self.probs) == list:
                 prob = self.probs[i]
             else:
                 prob = self.probs
-                
+
             if random.random() < prob:
                 images, bboxes = augmentation(images, bboxes)
+
+                # If augmentation results in empty bboxes, exit immediately
+                if isinstance(bboxes, np.ndarray) and bboxes.size == 0:
+                    return images, bboxes
+
         return images, bboxes
+
+
+class RandomBrightness(object):
+    """
+    Randomly adjusts image brightness by adding an offset.
+
+    delta: maximum brightness change ratio.
+           Example: 0.3 -> brightness shift is sampled from [-0.3, 0.3] * 255
+    """
+    def __init__(self, delta=0.3):
+        assert 0 <= delta <= 1
+        self.delta = delta
+
+    def __call__(self, img, bboxes):
+        if self.delta <= 0:
+            return img, bboxes
+
+        shift = random.uniform(-self.delta, self.delta) * 255
+        img = img.astype(np.float32) + shift
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        return img, bboxes
+
+
+class RandomContrast(object):
+    """
+    Randomly adjusts contrast by scaling pixel values.
+
+    delta: maximum contrast change ratio.
+           Example: 0.3 -> scale factor sampled from [0.7, 1.3]
+    """
+    def __init__(self, delta=0.3):
+        assert delta >= 0
+        self.delta = delta
+
+    def __call__(self, img, bboxes):
+        if self.delta <= 0:
+            return img, bboxes
+
+        alpha = 1.0 + random.uniform(-self.delta, self.delta)
+        img = img.astype(np.float32)
+        img = (img - 127.5) * alpha + 127.5
+        img = np.clip(img, 0, 255).astype(np.uint8)
+
+        return img, bboxes
+
+
+class RandomBlur(object):
+    """
+    Applies Gaussian blur with probability p.
+
+    p: probability of applying blur
+    max_ksize: maximum kernel size (must be odd)
+    """
+    def __init__(self, p=0.3, max_ksize=5):
+        self.p = p
+        self.max_ksize = max_ksize if max_ksize % 2 == 1 else max_ksize + 1
+
+    def __call__(self, img, bboxes):
+        if random.random() > self.p:
+            return img, bboxes
+
+        k = random.choice([3, self.max_ksize])
+        img = cv2.GaussianBlur(img, (k, k), 0)
+        return img, bboxes
+
+
+class RandomCutout(object):
+    """
+    Randomly masks out a rectangular region (simple Cutout).
+
+    p: probability of applying cutout
+    max_frac: maximum side length ratio with respect to the shorter image edge
+    """
+    def __init__(self, p=0.5, max_frac=0.2):
+        self.p = p
+        self.max_frac = max_frac
+
+    def __call__(self, img, bboxes):
+        if random.random() > self.p:
+            return img, bboxes
+
+        h, w = img.shape[:2]
+        cutout_size = int(self.max_frac * min(h, w))
+        if cutout_size <= 0:
+            return img, bboxes
+
+        cx = random.randint(0, w - 1)
+        cy = random.randint(0, h - 1)
+
+        x1 = max(0, cx - cutout_size // 2)
+        y1 = max(0, cy - cutout_size // 2)
+        x2 = min(w, cx + cutout_size // 2)
+        y2 = min(h, cy + cutout_size // 2)
+
+        img = img.copy()
+        img[y1:y2, x1:x2, :] = 0
+
+        # Bounding boxes are intentionally left unchanged
+        return img, bboxes
